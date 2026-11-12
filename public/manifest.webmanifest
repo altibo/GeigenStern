@@ -1,0 +1,16 @@
+{
+  "name": "GeigenStern · Geige lernen mit Pip",
+  "short_name": "GeigenStern",
+  "lang": "de",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#fff5fa",
+  "theme_color": "#d4c2ff",
+  "description": "Geige üben mit Noten oder Saiten und Fingern, Stimmgerät, Begleitung und Sternen.",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}
