@@ -2,6 +2,7 @@ import { OnsetDetector, Yin } from "../core/pitch.ts";
 import { chordAt, chordTones, type Song } from "../core/songs.ts";
 import { midiToFreq } from "../core/music.ts";
 import type { BeatClock } from "../core/speed.ts";
+import workletUrl from "./pitch-worklet.ts?worker&url";
 
 export interface MicFrame {
   /** audio-context time the frame is centred on */
@@ -19,7 +20,7 @@ export class Audio {
   ctx: AudioContext | null = null;
   private master!: GainNode;
   backingBus!: GainNode;
-  private clickBus!: GainNode;
+  clickBus!: GainNode;
   private guideBus!: GainNode;
   private noise!: AudioBuffer;
   private micStream: MediaStream | null = null;
@@ -66,6 +67,46 @@ export class Audio {
     return !!this.micStream;
   }
 
+  private worklet: AudioWorkletNode | null = null;
+  private workletReady: Promise<boolean> | null = null;
+  /** "worklet" (off main thread) or "analyser" (fallback) */
+  pitchPath: "worklet" | "analyser" | "none" = "none";
+  private offset = NaN;
+
+  /**
+   * Smooth audio-clock estimate for drawing: ctx.currentTime advances in coarse steps on many phones (one audio
+   * buffer at a time), which makes scrolling notes stutter. We map it to performance.now() with a slowly
+   * tracked offset instead.
+   */
+  smoothNow(): number {
+    const ctx = this.ctx;
+    if (!ctx) return 0;
+    if (ctx.state !== "running") {
+      this.offset = NaN;
+      return ctx.currentTime;
+    }
+    const perf = performance.now() / 1000;
+    const raw = ctx.currentTime - perf;
+    if (Number.isNaN(this.offset) || Math.abs(raw - this.offset) > 0.06) this.offset = raw;
+    else this.offset += (raw - this.offset) * 0.02;
+    // currentTime is the start of the next render quantum; the mean lag is about half a buffer
+    return perf + this.offset;
+  }
+
+  private loadWorklet(ctx: AudioContext): Promise<boolean> {
+    if (!this.workletReady)
+      this.workletReady = (async () => {
+        if (!ctx.audioWorklet || new URLSearchParams(location.search).has("noworklet")) return false;
+        try {
+          await ctx.audioWorklet.addModule(workletUrl);
+          return true;
+        } catch {
+          return false;
+        }
+      })();
+    return this.workletReady;
+  }
+
   async startMic(): Promise<void> {
     const ctx = this.ensure();
     if (!this.micStream) {
@@ -78,12 +119,36 @@ export class Audio {
       const hp = ctx.createBiquadFilter();
       hp.type = "highpass";
       hp.frequency.value = 150;
-      this.analyser = ctx.createAnalyser();
-      this.analyser.fftSize = 2048;
-      this.analyser.smoothingTimeConstant = 0;
-      src.connect(hp).connect(this.analyser);
+      src.connect(hp);
+      if (await this.loadWorklet(ctx)) {
+        const node = new AudioWorkletNode(ctx, "gs-pitch", { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1] });
+        const mute = ctx.createGain();
+        mute.gain.value = 0;
+        hp.connect(node).connect(mute).connect(ctx.destination);
+        node.port.onmessage = (e: MessageEvent<{ time: number; freq: number; clarity: number; rms: number }>) => this.handle(e.data);
+        node.port.postMessage({ gate: this.gate });
+        this.worklet = node;
+        this.pitchPath = "worklet";
+      } else {
+        this.analyser = ctx.createAnalyser();
+        this.analyser.fftSize = 2048;
+        this.analyser.smoothingTimeConstant = 0;
+        hp.connect(this.analyser);
+        this.pitchPath = "analyser";
+      }
     }
-    if (!this.micTimer) this.micTimer = window.setInterval(() => this.analyse(), 20);
+    if (!this.worklet && !this.micTimer) this.micTimer = window.setInterval(() => this.analyse(), 20);
+  }
+
+  setGate(g: number) {
+    this.gate = g;
+    this.worklet?.port.postMessage({ gate: g });
+  }
+
+  private handle(d: { time: number; freq: number; clarity: number; rms: number }) {
+    const time = d.time - this.inputLatency;
+    const onset = this.onsets.push(d.rms, time, this.gate);
+    this.onFrame?.({ time, freq: d.freq, clarity: d.clarity, rms: d.rms, onset });
   }
 
   stopMic() {
@@ -92,6 +157,8 @@ export class Audio {
     this.micStream?.getTracks().forEach((t) => t.stop());
     this.micStream = null;
     this.analyser = null;
+    this.worklet?.disconnect();
+    this.worklet = null;
   }
 
   private analyse() {
@@ -100,9 +167,7 @@ export class Audio {
     const frame = this.buf.subarray(this.buf.length - FRAME);
     this.yin.gate = this.gate;
     const r = this.yin.detect(frame);
-    const time = this.ctx.currentTime - FRAME / 2 / this.ctx.sampleRate - this.inputLatency;
-    const onset = this.onsets.push(r.rms, time, this.gate);
-    this.onFrame?.({ time, freq: r.freq, clarity: r.clarity, rms: r.rms, onset });
+    this.handle({ time: this.ctx.currentTime - FRAME / 2 / this.ctx.sampleRate, freq: r.freq, clarity: r.clarity, rms: r.rms });
   }
 
   setBacking(v: number) {

@@ -8,8 +8,26 @@ export const STRINGS: { name: StringName; midi: number }[] = [
 ];
 export const STRING_MIDI: Record<StringName, number> = { G: 55, D: 62, A: 69, E: 76 };
 
-export const midiToFreq = (m: number) => 440 * 2 ** ((m - 69) / 12);
-export const freqToMidi = (f: number) => 69 + 12 * Math.log2(f / 440);
+// Concert pitch ("Kammerton") for A4. Everything (tuner, scoring, backing, guide tone) goes through midiToFreq/freqToMidi.
+export const A4_MIN = 415;
+export const A4_MAX = 466;
+export const A4_PRESETS = [432, 440, 442] as const;
+let A4 = 440;
+export const clampA4 = (hz: number) => Math.max(A4_MIN, Math.min(A4_MAX, Math.round(Number(hz) || 440)));
+export function setA4(hz: number) {
+  A4 = clampA4(hz);
+  return A4;
+}
+export const getA4 = () => A4;
+/** Round a measured open-A frequency to a reference (1 Hz), or null when it is not plausibly an A string. */
+export function a4FromMeasurement(freqs: number[]): number | null {
+  const ok = freqs.filter((f) => f >= A4_MIN - 5 && f <= A4_MAX + 5).sort((a, b) => a - b);
+  if (ok.length < 5) return null;
+  const med = ok[ok.length >> 1];
+  return clampA4(med);
+}
+export const midiToFreq = (m: number) => A4 * 2 ** ((m - 69) / 12);
+export const freqToMidi = (f: number) => 69 + 12 * Math.log2(f / A4);
 /** Signed distance in cents from `f` to the equal-tempered target midi note. */
 export const centsOff = (f: number, midi: number) => 1200 * Math.log2(f / midiToFreq(midi));
 

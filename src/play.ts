@@ -2,7 +2,7 @@ import { Audio, Backing, type MicFrame } from "./audio/engine.ts";
 import { Judge, summarise, type Judgement, type PitchVerdict, type Summary } from "./core/judge.ts";
 import { freqToMidi, centsOff, pitchClassName } from "./core/music.ts";
 import { songBeats, type NoteEv, type Song } from "./core/songs.ts";
-import { BeatClock, SPEEDS, secPerBeat, type SpeedId } from "./core/speed.ts";
+import { BeatClock, SPEEDS, clampTempoPct, effectiveBpm, secPerBeat, type SpeedId } from "./core/speed.ts";
 import type { Progress } from "./core/progress.ts";
 import { btn, h, segmented } from "./ui/dom.ts";
 import { owlSvg, type Mood } from "./ui/owl.ts";
@@ -85,7 +85,7 @@ export class PlayScreen {
       this.practiceFrom = practice.from;
       this.practiceTo = practice.to;
     }
-    this.clock = new BeatClock(secPerBeat(song.bpm, SPEEDS[p.settings.speed]));
+    this.clock = new BeatClock(secPerBeat(song.bpm, SPEEDS[p.settings.speed], p.settings.tempoPct));
     this.strip = new Strip(song);
     this.root = h("section", { class: "screen play", "data-testid": "play" });
     const mode = segmented<ViewMode>(
@@ -113,7 +113,7 @@ export class PlayScreen {
       mode.el,
     );
     this.stage = h("div", { class: "stage" });
-    this.stage.append(this.strip.svg);
+    this.stage.append(this.strip.el);
     this.feedback = h("div", { class: "feedback", "data-testid": "feedback", "aria-live": "polite" });
     this.feedbackSub = h("div", { class: "feedback-sub", "data-testid": "feedback-sub" });
     this.countEl = h("div", { class: "countin", "data-testid": "countin" });
@@ -173,9 +173,26 @@ export class PlayScreen {
       },
       "seg speed-seg",
     );
-    const speedText = (v: SpeedId) =>
-      v === "normal" ? "Läuft im Original-Tempo weiter." : `${Math.round(SPEEDS[v].factor * 100)} % Tempo · wartet auf deinen Ton`;
-    const speedNote = h("div", { class: "small" }, speedText(p.settings.speed));
+    const speedText = (v: SpeedId) => {
+      const bpm = Math.round(effectiveBpm(this.song.bpm, SPEEDS[v], p.settings.tempoPct));
+      return v === "normal" ? `♩ = ${bpm} · läuft im Takt weiter` : `♩ = ${bpm} (${Math.round(SPEEDS[v].factor * 100)} %) · wartet auf deinen Ton`;
+    };
+    const speedNote = h("div", { class: "small", "data-testid": "speed-note" }, speedText(p.settings.speed));
+    const pctV = h("span", { class: "num", "data-testid": "tempo-pct" }, `${p.settings.tempoPct} %`);
+    const fine = (d: number) => () => {
+      p.settings.tempoPct = clampTempoPct(p.settings.tempoPct + d);
+      pctV.textContent = `${p.settings.tempoPct} %`;
+      speedNote.textContent = speedText(p.settings.speed);
+      this.save();
+    };
+    const fineRow = h(
+      "div",
+      { class: "row" },
+      h("span", { class: "lbl" }, "Feintempo"),
+      btn("−", "mini", fine(-5), "tempo-minus", "langsamer"),
+      pctV,
+      btn("+", "mini", fine(5), "tempo-plus", "schneller"),
+    );
     const toggle = (label: string, key: "metronome" | "guide", testid: string) => {
       const b = btn(label, "toggle", () => {
         p.settings[key] = !p.settings[key];
@@ -220,6 +237,7 @@ export class PlayScreen {
         ),
         h("div", { class: "row" }, h("span", { class: "lbl" }, "Tempo"), speed.el),
         speedNote,
+        fineRow,
         h(
           "div",
           { class: "row" },
@@ -263,7 +281,7 @@ export class PlayScreen {
     }
     const s = this.song;
     const sp = SPEEDS[this.p.settings.speed];
-    this.clock.spb = secPerBeat(s.bpm, sp);
+    this.clock.spb = secPerBeat(s.bpm, sp, this.p.settings.tempoPct);
     const bpb = s.beatsPerBar;
     this.range = kind === "practice" ? { from: this.practiceFrom, to: this.practiceTo } : null;
     this.startBeat = (this.range ? this.range.from * bpb : 0) - bpb;
@@ -338,7 +356,7 @@ export class PlayScreen {
       if (this.passes > 0) return;
       this.gateSamples.push(f.rms);
       const s = [...this.gateSamples].sort((a, b) => a - b);
-      this.audio.gate = Math.max(0.004, Math.min(0.02, s[Math.floor(s.length * 0.3)] * 2.5));
+      this.audio.setGate(Math.max(0.004, Math.min(0.02, s[Math.floor(s.length * 0.3)] * 2.5)));
       return;
     }
     const pitched = f.freq > 0 && f.clarity > 0.8;
@@ -377,32 +395,48 @@ export class PlayScreen {
     this.comboEl.textContent = c >= 2 ? `🔥 ${c}er Serie` : "";
   }
 
+  drawnBeat = 0;
+  private shown = { count: "", progress: -1, hint: "", waiting: false };
+  /** per-frame work: one transform for the notes, everything else only when its value changes */
   private draw() {
     const ctx = this.audio.ctx;
     if (!ctx || this.state === "ready") return;
-    const beat = this.clock.beatAt(ctx.currentTime);
+    const beat = this.clock.beatAt(this.audio.smoothNow());
+    this.drawnBeat = beat;
     this.strip.setBeat(beat);
     const bpb = this.song.beatsPerBar;
-    if (beat < this.startBeat + bpb) {
-      const n = Math.floor(beat - this.startBeat) + 1;
-      this.countEl.textContent = String(Math.max(1, Math.min(bpb, n)));
-      this.countEl.classList.add("show");
-    } else this.countEl.classList.remove("show");
+    const count = beat < this.startBeat + bpb ? String(Math.max(1, Math.min(bpb, Math.floor(beat - this.startBeat) + 1))) : "";
+    if (count !== this.shown.count) {
+      this.shown.count = count;
+      this.countEl.textContent = count;
+      this.countEl.classList.toggle("show", !!count);
+    }
     const span = this.endBeat - (this.startBeat + bpb);
-    this.progressEl.style.width = `${Math.max(0, Math.min(100, ((beat - this.startBeat - bpb) / span) * 100))}%`;
+    const prog = Math.round(Math.max(0, Math.min(1, (beat - this.startBeat - bpb) / span)) * 400) / 400;
+    if (prog !== this.shown.progress) {
+      this.shown.progress = prog;
+      this.progressEl.style.transform = `scaleX(${prog})`;
+    }
     const j = this.judge;
+    let hint = "";
+    let waiting = false;
     if (j && !j.done && this.state !== "countin") {
       const n = j.notes[j.index];
       if (this.clock.isFrozen && performance.now() - this.frozenAt > 350) {
-        this.hintEl.textContent = `Spiele: ${noteHint(n)}`;
-        this.hintEl.classList.add("waiting");
+        hint = `Spiele: ${noteHint(n)}`;
+        waiting = true;
         const live = j.liveHint;
         this.say("listen", live ? (live.includes("hoch") ? "Etwas zu hoch – Finger ein bisschen zurück" : "Etwas zu tief – Finger ein bisschen vor") : `Ich warte auf dich: ${pitchClassName(n.midi!)}`);
-      } else {
-        this.hintEl.textContent = `Nächster Ton: ${noteHint(n)}`;
-        this.hintEl.classList.remove("waiting");
-      }
-    } else if (!j) this.hintEl.textContent = this.kind === "preview" ? "Anhören – so klingt das Lied" : "";
+      } else hint = `Nächster Ton: ${noteHint(n)}`;
+    } else if (!j) hint = this.kind === "preview" ? "Anhören – so klingt das Lied" : "";
+    if (hint !== this.shown.hint) {
+      this.shown.hint = hint;
+      this.hintEl.textContent = hint;
+    }
+    if (waiting !== this.shown.waiting) {
+      this.shown.waiting = waiting;
+      this.hintEl.classList.toggle("waiting", waiting);
+    }
   }
 
   private endPass() {
@@ -508,6 +542,7 @@ export class PlayScreen {
     return {
       state: this.state,
       beat: this.beatNow(),
+      drawnBeat: this.drawnBeat,
       index: j?.index ?? -1,
       waiting: this.clock.isFrozen,
       score: Number(this.scoreEl.textContent),

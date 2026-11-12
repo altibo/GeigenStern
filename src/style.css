@@ -458,7 +458,30 @@ h2 {
 .strip {
   position: absolute;
   inset: 0;
-  display: block;
+  contain: strict;
+}
+.strip > svg {
+  position: absolute;
+  left: 0;
+  top: 0;
+}
+.strip-vp {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  overflow: hidden;
+  contain: strict;
+}
+.strip-scroll {
+  position: absolute;
+  left: 0;
+  top: 0;
+  will-change: transform;
+  backface-visibility: hidden;
+}
+.strip-fg {
+  pointer-events: none;
 }
 .panel-bg {
   fill: #fffafd;
@@ -510,14 +533,17 @@ h2 {
   opacity: 0.9;
 }
 .pitch-marker {
-  fill: #a9d6ff;
-  stroke: #5c9ad6;
-  stroke-width: 2;
-  opacity: 0.9;
+  position: absolute;
+  border-radius: 50%;
+  background: #a9d6ff;
+  border: 2px solid #5c9ad6;
+  opacity: 0;
+  will-change: transform;
+  pointer-events: none;
 }
 .pitch-marker.good {
-  fill: #93dcbc;
-  stroke: #4fae86;
+  background: #93dcbc;
+  border-color: #4fae86;
 }
 .ev.hit-good .head,
 .ev.hit-good .ink {
@@ -643,7 +669,10 @@ h2 {
 }
 .progress-fill {
   height: 100%;
-  width: 0;
+  width: 100%;
+  transform-origin: 0 50%;
+  transform: scaleX(0);
+  will-change: transform;
   background: linear-gradient(90deg, var(--mint), var(--sky), var(--lav));
 }
 .hint {
@@ -1094,4 +1123,24 @@ input[type="range"] {
     line-height: 1.15;
     font-size: 15px;
   }
+}
+
+.a4-box {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  background: #f7f3ff;
+  border-radius: 18px;
+  padding: 8px 10px;
+}
+.a4-val {
+  min-width: 4.2em;
+}
+.a4-chip {
+  font-size: 15px;
+  background: rgba(255, 255, 255, 0.7);
+  border-radius: 999px;
+  padding: 2px 10px;
+  margin-left: 4px;
 }

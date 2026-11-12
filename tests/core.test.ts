@@ -1,9 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Yin } from "../src/core/pitch.ts";
-import { centsOff, firstPositionFinger, freqToMidi, midiToFreq, noteName, staffStep, STRING_MIDI } from "../src/core/music.ts";
+import { a4FromMeasurement, centsOff, clampA4, firstPositionFinger, freqToMidi, getA4, midiToFreq, noteName, setA4, staffStep, STRING_MIDI } from "../src/core/music.ts";
 import { SONGS, chordAt, chordTones, playable, songBeats } from "../src/core/songs.ts";
-import { BeatClock, SPEEDS, effectiveBpm, secPerBeat } from "../src/core/speed.ts";
+import { BeatClock, SPEEDS, clampTempoPct, effectiveBpm, secPerBeat } from "../src/core/speed.ts";
 import { Judge, STAR_THRESHOLDS, starsFor, summarise, worstPassage, type Frame } from "../src/core/judge.ts";
 import { applyRun, defaultProgress, streak, dayKey } from "../src/core/progress.ts";
 import { addTone, midiHz } from "../tools/violin-synth.ts";
@@ -290,4 +290,66 @@ test("judge (wait mode): the previous note still ringing is not counted as a wro
   for (let i = 0; i < 4; i++) j.push(fr(1.25, 64));
   assert.equal(j.results[1].attempts, 0);
   assert.equal(j.results[1].points, 100);
+});
+
+test("Kammerton 432 Hz: detection, note mapping and scoring follow the reference", () => {
+  try {
+    assert.equal(setA4(432), 432);
+    assert.equal(getA4(), 432);
+    assert.equal(midiToFreq(69), 432);
+    assert.ok(Math.abs(midiToFreq(55) - 192.43) < 0.01); // G string at 432
+    const yin = new Yin(SR, FRAME);
+    for (const m of [55, 62, 69, 76, 59, 73]) {
+      const f = midiToFreq(m);
+      const buf = new Float32Array(SR / 2);
+      addTone(buf, f, 0, 0.5, { sampleRate: SR, vibratoCents: 15, noise: 0.03 });
+      const r = yin.detect(buf.subarray(6000, 6000 + FRAME));
+      assert.equal(Math.round(freqToMidi(r.freq)), m, noteName(m));
+      assert.ok(Math.abs(centsOff(r.freq, m)) < 20, `${noteName(m)} ${centsOff(r.freq, m)}`);
+    }
+    // a whole song played at 432 is perfect when the reference is 432 ...
+    const s = SONGS[3];
+    const notes = playable(s);
+    const spb = secPerBeat(s.bpm, SPEEDS.normal);
+    const frames = perform(notes, spb);
+    const j = new Judge(notes, SPEEDS.normal, spb);
+    for (const f of frames) j.push(f);
+    j.flush();
+    assert.ok(j.results.every((r) => r.pitch === "super"));
+    // ... but about 32 cents flat against 440
+    setA4(440);
+    const j2 = new Judge(notes, SPEEDS.normal, spb);
+    for (const f of frames) j2.push(f);
+    j2.flush();
+    assert.ok(j2.results.every((r) => r.pitch === "tief"), j2.results.map((r) => r.pitch).join());
+    assert.ok(Math.abs(j2.results[0].cents + 31.8) < 1);
+  } finally {
+    setA4(440);
+  }
+});
+
+test("Kammerton range, presets and auto-detect from the open A string", () => {
+  assert.equal(clampA4(400), 415);
+  assert.equal(clampA4(500), 466);
+  assert.equal(clampA4(431.6), 432);
+  assert.equal(a4FromMeasurement([432.2, 431.9, 432.4, 432.1, 431.8, 600, 300]), 432);
+  assert.equal(a4FromMeasurement([441.6, 441.7, 441.4, 441.5, 441.8]), 442);
+  assert.equal(a4FromMeasurement([293, 294, 295, 296, 297]), null);
+  assert.equal(a4FromMeasurement([432]), null);
+});
+
+test("beginner tempos and fine tempo", () => {
+  for (const s of SONGS) assert.ok(s.bpm >= 72 && s.bpm <= 100, `${s.id} ${s.bpm}`);
+  assert.deepEqual(
+    SONGS.map((s) => s.bpm),
+    [80, 84, 80, 80, 96],
+  );
+  assert.equal(effectiveBpm(80, SPEEDS.normal, 100), 80);
+  assert.equal(effectiveBpm(80, SPEEDS.turtle, 100), 56);
+  assert.equal(effectiveBpm(80, SPEEDS.snail, 100), 40);
+  assert.equal(effectiveBpm(80, SPEEDS.normal, 75), 60);
+  assert.equal(secPerBeat(80, SPEEDS.normal, 100), 0.75);
+  assert.equal(clampTempoPct(40), 60);
+  assert.equal(clampTempoPct(133), 120);
+  assert.equal(clampTempoPct(87), 85);
 });

@@ -41,11 +41,22 @@ export interface Layout {
   leftPanel: number;
 }
 
+/**
+ * Layers (bottom to top): static background SVG (lanes, staff lines), a clipped viewport holding ONE long SVG with
+ * all notes that only moves via a compositor transform (translate3d), and a static foreground SVG (clef, labels,
+ * hit line). Nothing is created or laid out per frame.
+ */
 export class Strip {
-  svg: SVGSVGElement;
+  el: HTMLDivElement;
+  private bg!: SVGSVGElement;
+  private fg!: SVGSVGElement;
+  private vp!: HTMLDivElement;
+  private scrollSvg!: SVGSVGElement;
   private scroll!: SVGGElement;
   private noteEls = new Map<number, SVGElement[]>();
-  private pitchMarker: SVGElement | null = null;
+  private pitchMarker!: HTMLDivElement;
+  private markerY = NaN;
+  private lastX = NaN;
   layout!: Layout;
   private staffBottom = 0;
   private gap = 10;
@@ -55,19 +66,27 @@ export class Strip {
   song: Song;
   constructor(song: Song) {
     this.song = song;
-    this.svg = document.createElementNS(NS, "svg") as SVGSVGElement;
-    this.svg.classList.add("strip");
-    this.svg.setAttribute("data-testid", "strip");
+    this.el = document.createElement("div");
+    this.el.className = "strip";
+    this.el.dataset.testid = "strip";
+    this.el.setAttribute("data-testid", "strip");
+  }
+  private svgEl(w: number, hgt: number, cls: string) {
+    const e = document.createElementNS(NS, "svg") as SVGSVGElement;
+    e.setAttribute("viewBox", `0 0 ${w} ${hgt}`);
+    e.setAttribute("width", String(w));
+    e.setAttribute("height", String(hgt));
+    e.setAttribute("class", cls);
+    return e;
   }
 
   build(width: number, height: number, mode: ViewMode) {
     this.mode = mode;
-    this.svg.innerHTML = "";
-    this.svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
-    this.svg.setAttribute("width", String(width));
-    this.svg.setAttribute("height", String(height));
-    this.svg.dataset.mode = mode;
+    this.el.innerHTML = "";
+    this.el.dataset.mode = mode;
     this.noteEls.clear();
+    this.lastX = NaN;
+    this.markerY = NaN;
     const s = this.song;
     const hasStaff = mode !== "tabs";
     const hasLanes = mode !== "notes";
@@ -85,22 +104,28 @@ export class Strip {
     const hitX = leftPanel + Math.max(40, width * 0.14);
     this.layout = { width, height, ppb, hitX, leftPanel };
 
-    const defs = el("defs", {}, this.svg);
-    const clip = el("clipPath", { id: "scrollclip" }, defs);
-    el("rect", { x: leftPanel, y: 0, width: width - leftPanel, height }, clip);
+    const total = s.chords.length * s.beatsPerBar;
+    this.bg = this.svgEl(width, height, "strip-bg");
+    this.vp = document.createElement("div");
+    this.vp.className = "strip-vp";
+    this.vp.style.left = `${leftPanel}px`;
+    const scrollW = Math.ceil((total + 2) * ppb);
+    this.scrollSvg = this.svgEl(scrollW, height, "strip-scroll");
+    this.vp.append(this.scrollSvg);
+    this.fg = this.svgEl(width, height, "strip-fg");
+    this.el.append(this.bg, this.vp, this.fg);
 
     // backgrounds
     if (hasLanes)
       LANES.forEach((name, i) => {
         const y = this.laneTop + i * this.laneH;
-        el("rect", { x: 0, y: y + 2, width, height: this.laneH - 4, rx: 12, class: `lane lane-${name}`, fill: STRING_COLORS[name].fill, "fill-opacity": 0.28 }, this.svg);
+        el("rect", { x: 0, y: y + 2, width, height: this.laneH - 4, rx: 12, class: `lane lane-${name}`, fill: STRING_COLORS[name].fill, "fill-opacity": 0.28 }, this.bg);
       });
     if (hasStaff)
-      for (let l = 0; l < 5; l++) el("line", { x1: 4, x2: width - 4, y1: this.yStep(l * 2), y2: this.yStep(l * 2), class: "staffline" }, this.svg);
+      for (let l = 0; l < 5; l++) el("line", { x1: 4, x2: width - 4, y1: this.yStep(l * 2), y2: this.yStep(l * 2), class: "staffline" }, this.bg);
 
-    const clipG = el("g", { "clip-path": "url(#scrollclip)" }, this.svg);
-    this.scroll = el("g", { class: "scroll" }, clipG) as SVGGElement;
-    const total = s.chords.length * s.beatsPerBar;
+    // content is shifted one beat to the right so the first bar line is not cut off
+    this.scroll = el("g", { class: "scroll", transform: `translate(${ppb} 0)` }, this.scrollSvg) as SVGGElement;
     // bar lines + beat ticks
     for (let b = 0; b <= total; b += 1) {
       const x = b * ppb;
@@ -123,7 +148,7 @@ export class Strip {
     }
 
     // fixed left panel: clef, key signature, string labels
-    const panel = el("g", { class: "panel" }, this.svg);
+    const panel = el("g", { class: "panel" }, this.fg);
     el("rect", { x: 0, y: 0, width: leftPanel, height, class: "panel-bg" }, panel);
     if (hasStaff) {
       for (let l = 0; l < 5; l++) el("line", { x1: 4, x2: leftPanel, y1: this.yStep(l * 2), y2: this.yStep(l * 2), class: "staffline" }, panel);
@@ -141,8 +166,12 @@ export class Strip {
     // hit line (the "now" cursor)
     const top = hasStaff ? this.yStep(10) - g : this.laneTop;
     const bottom = hasLanes ? this.laneTop + 4 * this.laneH : this.yStep(-2) + g;
-    el("rect", { x: hitX - 3, y: top, width: 6, height: bottom - top, rx: 3, class: "hitline", "data-testid": "hitline" }, this.svg);
-    this.pitchMarker = el("circle", { cx: hitX, cy: -100, r: hasStaff ? g * 0.45 : 7, class: "pitch-marker" }, this.svg);
+    el("rect", { x: hitX - 3, y: top, width: 6, height: bottom - top, rx: 3, class: "hitline", "data-testid": "hitline" }, this.fg);
+    const r = hasStaff ? g * 0.45 : 7;
+    this.pitchMarker = document.createElement("div");
+    this.pitchMarker.className = "pitch-marker";
+    Object.assign(this.pitchMarker.style, { width: `${2 * r}px`, height: `${2 * r}px`, left: `${hitX - r}px`, top: `${-r}px` });
+    this.el.append(this.pitchMarker);
   }
 
   private yStep(step: number) {
@@ -203,8 +232,12 @@ export class Strip {
 
   /** scroll so that `beat` sits on the hit line */
   setBeat(beat: number) {
-    const x = this.layout.hitX - beat * this.layout.ppb;
-    this.scroll.setAttribute("transform", `translate(${x.toFixed(1)} 0)`);
+    if (!this.layout) return;
+    const { hitX, leftPanel, ppb } = this.layout;
+    const x = Math.round((hitX - leftPanel - (beat + 1) * ppb) * 2) / 2;
+    if (x === this.lastX) return;
+    this.lastX = x;
+    this.scrollSvg.style.transform = `translate3d(${x}px,0,0)`;
   }
   mark(i: number, cls: string) {
     for (const e of this.noteEls.get(i) ?? []) e.classList.add(cls);
@@ -216,7 +249,8 @@ export class Strip {
   showPitch(midi: number | null, good: boolean) {
     if (!this.pitchMarker) return;
     if (midi === null) {
-      this.pitchMarker.setAttribute("cy", "-100");
+      if (!Number.isNaN(this.markerY)) this.pitchMarker.style.opacity = "0";
+      this.markerY = NaN;
       return;
     }
     let y: number;
@@ -225,7 +259,11 @@ export class Strip {
       const lane = midi >= 76 ? 0 : midi >= 69 ? 1 : midi >= 62 ? 2 : 3;
       y = this.laneTop + lane * this.laneH + this.laneH / 2;
     }
-    this.pitchMarker.setAttribute("cy", y.toFixed(1));
-    this.pitchMarker.classList.toggle("good", good);
+    if (y !== this.markerY) {
+      this.pitchMarker.style.transform = `translate3d(0,${y.toFixed(1)}px,0)`;
+      this.pitchMarker.style.opacity = "1";
+      this.markerY = y;
+    }
+    if (this.pitchMarker.classList.contains("good") !== good) this.pitchMarker.classList.toggle("good", good);
   }
 }

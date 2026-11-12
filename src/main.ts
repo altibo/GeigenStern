@@ -4,6 +4,7 @@ import { worstPassage } from "./core/judge.ts";
 import { BADGES, applyRun, loadProgress, markDay, saveProgress, streak } from "./core/progress.ts";
 import { SONGS, songById, type Song } from "./core/songs.ts";
 import { SPEEDS } from "./core/speed.ts";
+import { setA4 } from "./core/music.ts";
 import { PlayScreen, type PlayOutcome } from "./play.ts";
 import { TunerScreen } from "./tuner.ts";
 import { btn, confetti, h, starsText } from "./ui/dom.ts";
@@ -12,6 +13,7 @@ import { owlSvg } from "./ui/owl.ts";
 const params = new URLSearchParams(location.search);
 const p = loadProgress();
 const save = () => saveProgress(p);
+p.settings.a4 = setA4(p.settings.a4);
 const audio = new Audio();
 const app = document.getElementById("app")!;
 let cleanup: (() => void) | null = null;
@@ -84,7 +86,7 @@ function home() {
       h(
         "div",
         { class: "col-side" },
-        btn("🎻 Stimmgerät", "btn btn-sky wide", () => tuner(null), "open-tuner"),
+        btn(h("span", {}, "🎻 Stimmgerät ", h("span", { class: "a4-chip", "data-testid": "home-a4" }, `A = ${p.settings.a4} Hz`)), "btn btn-sky wide", () => tuner(null), "open-tuner"),
         h("h2", { class: "sec" }, "Abzeichen"),
         badges,
         h("p", { class: "tiny" }, "Alles bleibt auf diesem Gerät. Das Mikrofon hört nur zu, es wird nichts aufgenommen oder verschickt."),
@@ -167,6 +169,10 @@ function tuner(song: Song | null) {
       () => (song ? play(song) : home()),
       () => (song ? play(song) : home()),
       song ? "Weiter zum Lied" : "Fertig",
+      (hz) => {
+        p.settings.a4 = hz;
+        save();
+      },
     );
     show(t.root, "tuner");
     gs.tuner = t;

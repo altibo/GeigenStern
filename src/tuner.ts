@@ -1,5 +1,5 @@
 import type { Audio } from "./audio/engine.ts";
-import { centsOff, STRINGS, type StringName } from "./core/music.ts";
+import { A4_PRESETS, a4FromMeasurement, centsOff, getA4, setA4, STRINGS, type StringName } from "./core/music.ts";
 import { btn, h } from "./ui/dom.ts";
 import { STRING_COLORS } from "./ui/strip.ts";
 
@@ -27,8 +27,13 @@ export class TunerScreen {
   current: StringName | null = null;
   cents = 0;
   audio: Audio;
-  constructor(audio: Audio, title: string, onNext: () => void, onSkip: () => void, nextLabel: string) {
+  private a4El!: HTMLElement;
+  private a4Msg!: HTMLElement;
+  private measuring: number[] | null = null;
+  private onA4: (hz: number) => void;
+  constructor(audio: Audio, title: string, onNext: () => void, onSkip: () => void, nextLabel: string, onA4: (hz: number) => void) {
     this.audio = audio;
+    this.onA4 = onA4;
     this.root = h("section", { class: "screen tuner", "data-testid": "tuner" });
     const svgNS = "http://www.w3.org/2000/svg";
     const gauge = document.createElementNS(svgNS, "svg");
@@ -68,17 +73,63 @@ export class TunerScreen {
           { class: "tn-right" },
           h("p", { class: "small" }, "Streiche eine leere Saite. Tippe auf einen Buchstaben, um den Ton zu hören."),
           strings,
+          this.a4Row(),
           h("div", { class: "row actions" }, btn(nextLabel, "btn btn-big btn-pink", () => onNext(), "tuner-next"), btn("Überspringen", "btn btn-soft", () => onSkip(), "tuner-skip")),
         ),
       ),
     );
   }
 
+  private a4Row() {
+    this.a4El = h("span", { class: "num a4-val", "data-testid": "a4-value" }, `${getA4()} Hz`);
+    this.a4Msg = h("div", { class: "tiny", "data-testid": "a4-msg" }, "Meist 440 Hz, manche Geigen 432 oder 442. Gilt für Stimmgerät, Bewertung und Begleitung.");
+    const set = (hz: number) => {
+      const v = setA4(hz);
+      this.a4El.textContent = `${v} Hz`;
+      this.onA4(v);
+    };
+    return h(
+      "div",
+      { class: "a4-box" },
+      h("div", { class: "lbl" }, "Kammerton (Ton der leeren A-Saite)"),
+      h(
+        "div",
+        { class: "row" },
+        btn("−", "mini", () => set(getA4() - 1), "a4-minus", "1 Hz tiefer"),
+        this.a4El,
+        btn("+", "mini", () => set(getA4() + 1), "a4-plus", "1 Hz höher"),
+      ),
+      h(
+        "div",
+        { class: "row" },
+        ...A4_PRESETS.map((hz) => btn(String(hz), "toggle", () => set(hz), `a4-${hz}`)),
+        btn("🎯 Automatisch (A-Saite)", "toggle", () => this.measureA4(set), "a4-auto"),
+      ),
+      this.a4Msg,
+    );
+  }
+
+  private measureA4(set: (hz: number) => void) {
+    this.measuring = [];
+    this.a4Msg.textContent = "Streiche jetzt 3 Sekunden lang die leere A-Saite …";
+    window.setTimeout(() => {
+      const got = this.measuring ?? [];
+      this.measuring = null;
+      const hz = a4FromMeasurement(got);
+      if (hz === null) this.a4Msg.textContent = "Ich habe kein A gehört. Streiche die leere A-Saite und probier es nochmal.";
+      else {
+        set(hz);
+        this.a4Msg.textContent = `Gemessen: Kammerton ${hz} Hz.`;
+      }
+    }, 3000);
+  }
+
   async start() {
     await this.audio.startMic();
-    this.audio.gate = 0.004;
+    this.audio.setGate(0.004);
     this.audio.onFrame = (f) => {
       const now = performance.now();
+      if (this.measuring && f.freq > 0 && f.clarity > 0.85) this.measuring.push(f.freq);
       const st = f.freq > 0 && f.clarity > 0.85 ? nearestString(f.freq) : null;
       if (!st) {
         if (now - this.lastSeen > 600) {

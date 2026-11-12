@@ -160,11 +160,11 @@ test("Schildkröte runs at 70 % tempo, Schnecke at 50 %", async ({ page }) => {
   await startSong(page, "ode", "turtle");
   await page.getByTestId("start").click();
   await page.waitForFunction(() => (window as unknown as { __gs: { play: { view(): { state: string } } } }).__gs.play.view().state === "countin");
-  expect((await view(page)).spb).toBeCloseTo(60 / (100 * 0.7), 5);
+  expect((await view(page)).spb).toBeCloseTo(60 / (80 * 0.7), 5);
   await page.getByTestId("exit").click();
   await startSong(page, "ode", "snail");
   await page.getByTestId("start").click();
-  expect((await view(page)).spb).toBeCloseTo(60 / 50, 5);
+  expect((await view(page)).spb).toBeCloseTo(60 / 40, 5);
 });
 
 test("display modes: Tabs, Tabs + Noten, Noten", async ({ page }) => {
@@ -219,4 +219,114 @@ test("Anhören plays the song without the microphone and returns to the start pa
   await page.waitForFunction(() => (window as unknown as { __gs: { play: { view(): { state: string } } } }).__gs.play.view().state === "running", null, { timeout: 5000 });
   await expect(page.getByTestId("hint")).toContainText("Anhören");
   await expect(page.getByTestId("ready")).toBeVisible({ timeout: 40000 });
+});
+
+/** measures the metronome: median interval between clicks -> BPM actually heard */
+async function measureClickBpm(page: import("@playwright/test").Page, ms: number) {
+  return page.evaluate(async (dur) => {
+    const gs = (window as unknown as { __gs: { audio: { ctx: AudioContext; clickBus: GainNode } } }).__gs;
+    const an = gs.audio.ctx.createAnalyser();
+    an.fftSize = 256;
+    gs.audio.clickBus.connect(an);
+    const d = new Float32Array(256);
+    const on: number[] = [];
+    let loud = false;
+    await new Promise<void>((res) => {
+      const t0 = performance.now();
+      const iv = setInterval(() => {
+        an.getFloatTimeDomainData(d);
+        let pk = 0;
+        for (const x of d) pk = Math.max(pk, Math.abs(x));
+        if (pk > 0.05 && !loud) on.push(gs.audio.ctx.currentTime);
+        loud = pk > 0.02;
+        if (performance.now() - t0 > dur) {
+          clearInterval(iv);
+          res();
+        }
+      }, 3);
+    });
+    const iv = on.slice(1).map((t, i) => t - on[i]).sort((a, b) => a - b);
+    return { bpm: 60 / iv[iv.length >> 1], clicks: on.length };
+  }, ms);
+}
+
+test("tempo check: heard click rate equals the declared tempo (4/4 and 3/4, Normal, Schildkröte, fine tempo)", async ({ page }) => {
+  await open(page, { query: "&notuner" });
+  const cases: [string, "normal" | "turtle", number][] = [
+    ["entchen", "normal", 80],
+    ["hedwig", "normal", 96],
+    ["hedwig", "turtle", 96 * 0.7],
+  ];
+  for (const [id, sp, bpm] of cases) {
+    await startSong(page, id, sp);
+    if ((await page.getByTestId("tg-metro").getAttribute("aria-pressed")) !== "true") await page.getByTestId("tg-metro").click();
+    await expect(page.getByTestId("speed-note")).toContainText(`♩ = ${Math.round(bpm)}`);
+    // somebody plays along, so Schildkröte does not stop to wait
+    await page.evaluate(() => (window as unknown as { __fakeMic: { startFollow(o: object): void } }).__fakeMic.startFollow({}));
+    await page.getByTestId("start").click();
+    const m = await measureClickBpm(page, 6000);
+    expect(m.clicks).toBeGreaterThan(5);
+    expect(Math.abs(m.bpm - bpm) / bpm).toBeLessThan(0.03);
+    // the notes scroll at the same rate: beats per second == bpm / 60
+    const a = await view(page);
+    const t0 = Date.now();
+    await page.waitForTimeout(2000);
+    const b = await view(page);
+    const rate = ((b.beat - a.beat) / ((Date.now() - t0) / 1000)) * 60;
+    if (!b.waiting && !a.waiting && sp === "normal") expect(Math.abs(rate - bpm) / bpm).toBeLessThan(0.06);
+    await page.getByTestId("exit").click();
+  }
+  // fine tempo 75 % -> Entchen at 60
+  await startSong(page, "entchen", "normal");
+  for (let i = 0; i < 5; i++) await page.getByTestId("tempo-minus").click();
+  await expect(page.getByTestId("tempo-pct")).toHaveText("75 %");
+  await expect(page.getByTestId("speed-note")).toContainText("♩ = 60");
+  await page.getByTestId("start").click();
+  const m = await measureClickBpm(page, 6000);
+  expect(Math.abs(m.bpm - 60) / 60).toBeLessThan(0.03);
+});
+
+test("Kammerton 432: tuner shows 'passt!' for a 432 Hz A, home shows the setting, songs are scored against it", async ({ page }) => {
+  await open(page, { query: "&notuner" });
+  await expect(page.getByTestId("home-a4")).toHaveText("A = 440 Hz");
+  await page.getByTestId("open-tuner").click();
+  await page.getByTestId("a4-432").click();
+  await expect(page.getByTestId("a4-value")).toHaveText("432 Hz");
+  await page.getByTestId("a4-plus").click();
+  await expect(page.getByTestId("a4-value")).toHaveText("433 Hz");
+  await page.getByTestId("a4-minus").click();
+  await page.waitForTimeout(300);
+  // A4 at 432 Hz = 440 Hz reference minus 31.8 cents
+  const tone = (m: number, d: number, c: number) =>
+    page.evaluate(([m, d, c]) => (window as unknown as { __fakeMic: { tone(m: number, d: number, a: number, c: number): void } }).__fakeMic.tone(m, d, 0, c), [m, d, c]);
+  await tone(69, 2.5, -31.77);
+  await expect(page.getByTestId("tuner-msg")).toHaveText("passt!", { timeout: 3000 });
+  await page.waitForTimeout(2200);
+  // auto-detect: an A string at 442 Hz
+  await page.getByTestId("a4-auto").click();
+  await tone(69, 3.2, 7.85);
+  await expect(page.getByTestId("a4-msg")).toHaveText("Gemessen: Kammerton 442 Hz.", { timeout: 5000 });
+  await expect(page.getByTestId("a4-value")).toHaveText("442 Hz");
+  await page.getByTestId("a4-432").click();
+  await page.getByTestId("tuner-close").click();
+  await expect(page.getByTestId("home-a4")).toHaveText("A = 432 Hz");
+  await page.reload();
+  await expect(page.getByTestId("home-a4")).toHaveText("A = 432 Hz");
+  // a melody played 432-tuned scores 'Super!'
+  await startSong(page, "entchen", "normal");
+  await recordFeedback(page);
+  await page.evaluate(() => (window as unknown as { __fakeMic: { startFollow(o: object): void } }).__fakeMic.startFollow({ cents: -31.77 }));
+  await page.getByTestId("start").click();
+  await page.waitForFunction(() => (window as unknown as { __gs: { play: { view(): { results: number } } } }).__gs.play.view().results >= 8, null, { timeout: 30000 });
+  const log = await feedbackLog(page);
+  expect(log.filter((t) => t === "Super!").length).toBeGreaterThanOrEqual(7);
+  expect(log).not.toContain("etwas zu tief");
+});
+
+test("pitch detection runs in an AudioWorklet (off the main thread)", async ({ page }) => {
+  await open(page, { query: "&notuner" });
+  await startSong(page, "entchen", "normal");
+  await page.getByTestId("start").click();
+  await page.waitForFunction(() => (window as unknown as { __gs: { play: { view(): { state: string } } } }).__gs.play.view().state !== "ready");
+  expect(await page.evaluate(() => (window as unknown as { __gs: { audio: { pitchPath: string } } }).__gs.audio.pitchPath)).toBe("worklet");
 });

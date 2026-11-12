@@ -18,6 +18,10 @@ export interface Progress {
     metronome: boolean;
     guide: boolean;
     tunerFirst: boolean;
+    /** Kammerton A4 in Hz */
+    a4: number;
+    /** fine tempo in percent of the song's Normal tempo */
+    tempoPct: number;
   };
   micExplained: boolean;
 }
@@ -28,7 +32,7 @@ export const defaultProgress = (): Progress => ({
   days: [],
   perfectTotal: 0,
   badges: [],
-  settings: { mode: "tabs", speed: "turtle", backing: 0.5, metronome: false, guide: false, tunerFirst: true },
+  settings: { mode: "tabs", speed: "turtle", backing: 0.5, metronome: false, guide: false, tunerFirst: true, a4: 440, tempoPct: 100 },
   micExplained: false,
 });
 

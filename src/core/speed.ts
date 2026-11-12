@@ -16,8 +16,12 @@ export const SPEEDS: Record<SpeedId, Speed> = {
   turtle: { id: "turtle", label: "Schildkröte", emoji: "🐢", factor: 0.7, wait: true, tol: 40, acceptTol: 60 },
   snail: { id: "snail", label: "Schnecke", emoji: "🐌", factor: 0.5, wait: true, tol: 50, acceptTol: 75 },
 };
-export const effectiveBpm = (bpm: number, s: Speed) => bpm * s.factor;
-export const secPerBeat = (bpm: number, s: Speed) => 60 / effectiveBpm(bpm, s);
+/** quarter-note BPM actually played: song tempo x speed (Schildkröte/Schnecke) x fine tempo (percent, 60..120) */
+export const effectiveBpm = (bpm: number, s: Speed, pct = 100) => bpm * s.factor * (pct / 100);
+export const secPerBeat = (bpm: number, s: Speed, pct = 100) => 60 / effectiveBpm(bpm, s, pct);
+export const TEMPO_PCT_MIN = 60;
+export const TEMPO_PCT_MAX = 120;
+export const clampTempoPct = (v: number) => Math.max(TEMPO_PCT_MIN, Math.min(TEMPO_PCT_MAX, Math.round((Number(v) || 100) / 5) * 5));
 
 /** Beat clock that can freeze (wait mode) and resume without jumps. Times in seconds (AudioContext time). */
 export class BeatClock {
