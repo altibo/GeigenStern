@@ -1,7 +1,7 @@
 // Offline shell: caches the app on install (network-first for pages, cache-first for assets).
 const PREFIX = `geigenstern:${self.registration.scope}:`;
-const CACHE = `${PREFIX}ea1489ab6099`;
-const SHELL = ["./", "./index.html", "./manifest.webmanifest", "./icon-192.png", "./icon-512.png", "./assets/index-Cl4s374r.js", "./assets/index-CmFgv5BI.css", "./assets/nunito-BwcTM8Z6.woff2"];
+const CACHE = `${PREFIX}9da25e4277be`;
+const SHELL = ["./", "./index.html", "./manifest.webmanifest", "./icon-192.png", "./icon-512.png", "./assets/index-Bjfw9RvC.js", "./assets/index-CA4gLNTI.css", "./assets/nunito-BwcTM8Z6.woff2", "./assets/pitch-worklet-Dta1RKP5.js"];
 self.addEventListener("install", (event) => {
   event.waitUntil(
     (async () => {
